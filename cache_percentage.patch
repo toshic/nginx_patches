@@ -1,0 +1,245 @@
+Index: src/http/ngx_http_upstream.c
+===================================================================
+--- src/http/ngx_http_upstream.c	(revision 62)
++++ src/http/ngx_http_upstream.c	(revision 63)
+@@ -968,6 +968,8 @@
+     ngx_int_t            event;
+     ngx_connection_t     *c;
+     ngx_http_upstream_t  *u;
++    off_t                response_length;
++    off_t                complete;
+ 
+     ngx_log_debug2(NGX_LOG_DEBUG_HTTP, ev->log, 0,
+                    "http upstream check client, write event:%d, \"%V\"",
+@@ -1075,17 +1077,24 @@
+     ev->eof = 1;
+     c->error = 1;
+ 
+-    if (!u->cacheable && u->peer.connection) {
++    if (u->pipe) {
++        response_length = u->pipe->read_length;
++    } else {
++        response_length = u->state->response_length;
++    }
++    complete = (off_t)((double)response_length / u->length * 100);
++
++    if ((!u->cacheable || (u->conf->cache_complete_percentage > complete)) && u->peer.connection) {
+         ngx_log_error(NGX_LOG_INFO, ev->log, err,
+                       "client closed prematurely connection, "
+-                      "so upstream connection is closed too");
++                      "so upstream connection is closed too (%d%% completed)", complete);
+         ngx_http_upstream_finalize_request(r, u,
+                                            NGX_HTTP_CLIENT_CLOSED_REQUEST);
+         return;
+     }
+ 
+     ngx_log_error(NGX_LOG_INFO, ev->log, err,
+-                  "client closed prematurely connection");
++                  "client closed prematurely connection (%d%% completed)", complete);
+ 
+     if (u->peer.connection == NULL) {
+         ngx_http_upstream_finalize_request(r, u,
+Index: src/http/ngx_http_upstream.h
+===================================================================
+--- src/http/ngx_http_upstream.h	(revision 62)
++++ src/http/ngx_http_upstream.h	(revision 63)
+@@ -165,6 +165,7 @@
+     ngx_uint_t                       cache_min_uses;
+     ngx_uint_t                       cache_use_stale;
+     ngx_uint_t                       cache_methods;
++    ngx_uint_t                       cache_complete_percentage;
+ 
+     ngx_array_t                     *cache_valid;
+     ngx_array_t                     *cache_bypass;
+Index: src/http/modules/ngx_http_fastcgi_module.c
+===================================================================
+--- src/http/modules/ngx_http_fastcgi_module.c	(revision 62)
++++ src/http/modules/ngx_http_fastcgi_module.c	(revision 63)
+@@ -191,6 +191,11 @@
+     { ngx_null_string, 0 }
+ };
+ 
++#if (NGX_HTTP_CACHE)
++static ngx_conf_num_bounds_t  ngx_http_upstream_cache_complete_percentage_bounds = {
++    ngx_conf_check_num_bounds, 0, 100
++};
++#endif
+ 
+ ngx_module_t  ngx_http_fastcgi_module;
+ 
+@@ -395,6 +395,13 @@
+       offsetof(ngx_http_fastcgi_loc_conf_t, upstream.cache_lock_timeout),
+       NULL },
+ 
++    { ngx_string("fastcgi_cache_complete_percentage"),
++      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
++      ngx_conf_set_num_slot,
++      NGX_HTTP_LOC_CONF_OFFSET,
++      offsetof(ngx_http_proxy_loc_conf_t, upstream.cache_complete_percentage),
++      &ngx_http_upstream_cache_complete_percentage_bounds },
++
+ #endif
+ 
+     { ngx_string("fastcgi_temp_path"),
+@@ -1991,6 +2003,7 @@
+     conf->upstream.cache_bypass = NGX_CONF_UNSET_PTR;
+     conf->upstream.no_cache = NGX_CONF_UNSET_PTR;
+     conf->upstream.cache_valid = NGX_CONF_UNSET_PTR;
++    conf->upstream.cache_complete_percentage = NGX_CONF_UNSET_UINT;
+ #endif
+ 
+     conf->upstream.hide_headers = NGX_CONF_UNSET_PTR;
+@@ -2232,6 +2245,9 @@
+         conf->cache_key = prev->cache_key;
+     }
+ 
++    ngx_conf_merge_uint_value(conf->upstream.cache_complete_percentage,
++                              prev->upstream.cache_complete_percentage, 0);
++
+ #endif
+ 
+     ngx_conf_merge_value(conf->upstream.pass_request_headers,
+Index: src/http/modules/ngx_http_proxy_module.c
+===================================================================
+--- src/http/modules/ngx_http_proxy_module.c	(revision 62)
++++ src/http/modules/ngx_http_proxy_module.c	(revision 63)
+@@ -156,6 +156,11 @@
+     { ngx_null_string, 0 }
+ };
+ 
++#if (NGX_HTTP_CACHE)
++static ngx_conf_num_bounds_t  ngx_http_upstream_cache_complete_percentage_bounds = {
++    ngx_conf_check_num_bounds, 0, 100
++};
++#endif
+ 
+ ngx_module_t  ngx_http_proxy_module;
+ 
+@@ -381,6 +386,13 @@
+       offsetof(ngx_http_proxy_loc_conf_t, upstream.cache_methods),
+       &ngx_http_upstream_cache_method_mask },
+ 
++    { ngx_string("proxy_cache_complete_percentage"),
++      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
++      ngx_conf_set_num_slot,
++      NGX_HTTP_LOC_CONF_OFFSET,
++      offsetof(ngx_http_proxy_loc_conf_t, upstream.cache_complete_percentage),
++      &ngx_http_upstream_cache_complete_percentage_bounds },
++
+ #endif
+ 
+     { ngx_string("proxy_temp_path"),
+@@ -1688,6 +1700,7 @@
+     conf->upstream.cache_bypass = NGX_CONF_UNSET_PTR;
+     conf->upstream.no_cache = NGX_CONF_UNSET_PTR;
+     conf->upstream.cache_valid = NGX_CONF_UNSET_PTR;
++    conf->upstream.cache_complete_percentage = NGX_CONF_UNSET_UINT;
+ #endif
+ 
+     conf->upstream.hide_headers = NGX_CONF_UNSET_PTR;
+@@ -1931,6 +1944,9 @@
+         conf->cache_key = prev->cache_key;
+     }
+ 
++    ngx_conf_merge_uint_value(conf->upstream.cache_complete_percentage,
++                              prev->upstream.cache_complete_percentage, 0);
++
+ #endif
+ 
+     if (conf->method.len == 0) {
+Index: src/http/modules/ngx_http_scgi_module.c
+===================================================================
+--- src/http/modules/ngx_http_scgi_module.c	(revision 62)
++++ src/http/modules/ngx_http_scgi_module.c	(revision 63)
+@@ -69,6 +69,11 @@
+     { ngx_null_string, 0 }
+ };
+ 
++#if (NGX_HTTP_CACHE)
++static ngx_conf_num_bounds_t  ngx_http_upstream_cache_complete_percentage_bounds = {
++    ngx_conf_check_num_bounds, 0, 100
++};
++#endif
+ 
+ ngx_module_t  ngx_http_scgi_module;
+ 
+@@ -238,6 +243,13 @@
+       offsetof(ngx_http_scgi_loc_conf_t, upstream.cache_methods),
+       &ngx_http_upstream_cache_method_mask },
+ 
++    { ngx_string("scgi_cache_complete_percentage"),
++      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
++      ngx_conf_set_num_slot,
++      NGX_HTTP_LOC_CONF_OFFSET,
++      offsetof(ngx_http_proxy_loc_conf_t, upstream.cache_complete_percentage),
++      &ngx_http_upstream_cache_complete_percentage_bounds },
++
+ #endif
+ 
+     { ngx_string("scgi_temp_path"),
+@@ -1020,6 +1032,7 @@
+     conf->upstream.cache_bypass = NGX_CONF_UNSET_PTR;
+     conf->upstream.no_cache = NGX_CONF_UNSET_PTR;
+     conf->upstream.cache_valid = NGX_CONF_UNSET_PTR;
++    conf->upstream.cache_complete_percentage = NGX_CONF_UNSET_UINT;
+ #endif
+ 
+     conf->upstream.hide_headers = NGX_CONF_UNSET_PTR;
+@@ -1251,6 +1264,9 @@
+         conf->cache_key = prev->cache_key;
+     }
+ 
++    ngx_conf_merge_uint_value(conf->upstream.cache_complete_percentage,
++                              prev->upstream.cache_complete_percentage, 0);
++
+ #endif
+ 
+     ngx_conf_merge_value(conf->upstream.pass_request_headers,
+Index: src/http/modules/ngx_http_uwsgi_module.c
+===================================================================
+--- src/http/modules/ngx_http_uwsgi_module.c	(revision 62)
++++ src/http/modules/ngx_http_uwsgi_module.c	(revision 63)
+@@ -82,6 +82,11 @@
+     { ngx_null_string, 0 }
+ };
+ 
++#if (NGX_HTTP_CACHE)
++static ngx_conf_num_bounds_t  ngx_http_upstream_cache_complete_percentage_bounds = {
++    ngx_conf_check_num_bounds, 0, 100
++};
++#endif
+ 
+ ngx_module_t  ngx_http_uwsgi_module;
+ 
+@@ -265,6 +270,13 @@
+       offsetof(ngx_http_uwsgi_loc_conf_t, upstream.cache_methods),
+       &ngx_http_upstream_cache_method_mask },
+ 
++    { ngx_string("uwsgi_cache_complete_percentage"),
++      NGX_HTTP_MAIN_CONF|NGX_HTTP_SRV_CONF|NGX_HTTP_LOC_CONF|NGX_CONF_TAKE1,
++      ngx_conf_set_num_slot,
++      NGX_HTTP_LOC_CONF_OFFSET,
++      offsetof(ngx_http_proxy_loc_conf_t, upstream.cache_complete_percentage),
++      &ngx_http_upstream_cache_complete_percentage_bounds },
++
+ #endif
+ 
+     { ngx_string("uwsgi_temp_path"),
+@@ -1073,6 +1085,7 @@
+     conf->upstream.cache_bypass = NGX_CONF_UNSET_PTR;
+     conf->upstream.no_cache = NGX_CONF_UNSET_PTR;
+     conf->upstream.cache_valid = NGX_CONF_UNSET_PTR;
++    conf->upstream.cache_complete_percentage = NGX_CONF_UNSET_UINT;
+ #endif
+ 
+     conf->upstream.hide_headers = NGX_CONF_UNSET_PTR;
+@@ -1304,6 +1317,9 @@
+         conf->cache_key = prev->cache_key;
+     }
+ 
++    ngx_conf_merge_uint_value(conf->upstream.cache_complete_percentage,
++                              prev->upstream.cache_complete_percentage, 0);
++
+ #endif
+ 
+     ngx_conf_merge_value(conf->upstream.pass_request_headers,
