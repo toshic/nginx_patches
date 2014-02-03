@@ -1,4 +1,3 @@
-
 Table of Contents
 =================
 
@@ -62,9 +61,13 @@ Directives
 ----------
 
 **eblob**
-**syntax:** mp4
-**default:** n/a
-**context:** location
+
+**syntax:** *eblob*
+
+**default:** *n/a*
+
+**context:** *location*
+
 Enable streaming from eblob at a particular location
 
 [Back to TOC](#table-of-contents)
@@ -78,11 +81,17 @@ Directives
 ----------
 
 **flv_filter**
-**syntax:** flv_filter (off|cached|on)
-**default:** off
-**context:** location
+
+**syntax:** *flv_filter (off|cached|on)*
+
+**default:** *off*
+
+**context:** *location*
+
 on - Enable FLV pseudostreaming filter for all requests
+
 cached - Enable FLV pseudostreaming filter only for requests that were already cached
+
 off - Disable FLV pseudostreaming filter
 
 [Back to TOC](#table-of-contents)
